@@ -1,6 +1,6 @@
 const express = require("express");
 const cors = require("cors");
-const sqlite3 = require("sqlite3").verbose();
+const Database = require("better-sqlite3");
 const { v4: uuidv4 } = require("uuid");
 const path = require("path");
 require("dotenv").config();
@@ -14,12 +14,12 @@ app.use(express.json());
 
 // Database setup
 const dbPath = path.join(__dirname, "journal.db");
-const db = new sqlite3.Database(dbPath);
+const db = new Database(dbPath);
 
 // Initialize database tables
-db.serialize(() => {
+try {
   // Shared journals table
-  db.run(`
+  db.exec(`
     CREATE TABLE IF NOT EXISTS shared_journals (
       share_key TEXT PRIMARY KEY,
       title TEXT NOT NULL,
@@ -32,7 +32,7 @@ db.serialize(() => {
   `);
 
   // Journal entries table
-  db.run(`
+  db.exec(`
     CREATE TABLE IF NOT EXISTS journal_entries (
       id TEXT PRIMARY KEY,
       share_key TEXT NOT NULL,
@@ -48,46 +48,57 @@ db.serialize(() => {
   `);
 
   // Add new columns to existing tables if they don't exist
-  db.run(`ALTER TABLE shared_journals ADD COLUMN created_by_id TEXT`, (err) => {
+  try {
+    db.exec(`ALTER TABLE shared_journals ADD COLUMN created_by_id TEXT`);
+  } catch (err) {
     // Ignore error if column already exists
-  });
-  db.run(
-    `ALTER TABLE shared_journals ADD COLUMN created_by_username TEXT`,
-    (err) => {
-      // Ignore error if column already exists
-    }
-  );
-  db.run(
-    `ALTER TABLE shared_journals ADD COLUMN editable_by_anyone BOOLEAN DEFAULT 0`,
-    (err) => {
-      // Ignore error if column already exists
-    }
-  );
+  }
 
-  db.run(`ALTER TABLE journal_entries ADD COLUMN created_by_id TEXT`, (err) => {
+  try {
+    db.exec(`ALTER TABLE shared_journals ADD COLUMN created_by_username TEXT`);
+  } catch (err) {
     // Ignore error if column already exists
-  });
-  db.run(
-    `ALTER TABLE journal_entries ADD COLUMN created_by_username TEXT`,
-    (err) => {
-      // Ignore error if column already exists
-    }
-  );
-  db.run(
-    `ALTER TABLE journal_entries ADD COLUMN last_edited_by_id TEXT`,
-    (err) => {
-      // Ignore error if column already exists
-    }
-  );
-  db.run(
-    `ALTER TABLE journal_entries ADD COLUMN last_edited_by_username TEXT`,
-    (err) => {
-      // Ignore error if column already exists
-    }
-  );
+  }
+
+  try {
+    db.exec(
+      `ALTER TABLE shared_journals ADD COLUMN editable_by_anyone BOOLEAN DEFAULT 0`
+    );
+  } catch (err) {
+    // Ignore error if column already exists
+  }
+
+  try {
+    db.exec(`ALTER TABLE journal_entries ADD COLUMN created_by_id TEXT`);
+  } catch (err) {
+    // Ignore error if column already exists
+  }
+
+  try {
+    db.exec(`ALTER TABLE journal_entries ADD COLUMN created_by_username TEXT`);
+  } catch (err) {
+    // Ignore error if column already exists
+  }
+
+  try {
+    db.exec(`ALTER TABLE journal_entries ADD COLUMN last_edited_by_id TEXT`);
+  } catch (err) {
+    // Ignore error if column already exists
+  }
+
+  try {
+    db.exec(
+      `ALTER TABLE journal_entries ADD COLUMN last_edited_by_username TEXT`
+    );
+  } catch (err) {
+    // Ignore error if column already exists
+  }
 
   console.log("Database tables initialized");
-});
+} catch (err) {
+  console.error("Error initializing database:", err);
+  process.exit(1);
+}
 
 // Utility function to generate 8-character share key
 function generateShareKey() {
@@ -114,44 +125,39 @@ app.post("/journal/createShared", (req, res) => {
 
   const finalShareKey = shareKey || generateShareKey();
 
-  const stmt = db.prepare(`
-    INSERT INTO shared_journals (share_key, title, created_by_id, created_by_username, editable_by_anyone) 
-    VALUES (?, ?, ?, ?, ?)
-  `);
+  try {
+    const stmt = db.prepare(`
+      INSERT INTO shared_journals (share_key, title, created_by_id, created_by_username, editable_by_anyone) 
+      VALUES (?, ?, ?, ?, ?)
+    `);
 
-  stmt.run(
-    [
+    stmt.run(
       finalShareKey,
       title,
       createdBy?.id || null,
       createdBy?.username || null,
-      0, // Default to false (not editable by anyone)
-    ],
-    function (err) {
-      if (err) {
-        console.error("Error creating shared journal:", err);
-        if (err.code === "SQLITE_CONSTRAINT_PRIMARYKEY") {
-          return res.status(409).json({
-            success: false,
-            error: "Share key already exists",
-          });
-        }
-        return res.status(500).json({
-          success: false,
-          error: "Failed to create shared journal",
-        });
-      }
+      0 // Default to false (not editable by anyone)
+    );
 
-      res.json({
-        success: true,
-        shareKey: finalShareKey,
-        title: title,
-        message: "Shared journal created successfully",
+    res.json({
+      success: true,
+      shareKey: finalShareKey,
+      title: title,
+      message: "Shared journal created successfully",
+    });
+  } catch (err) {
+    console.error("Error creating shared journal:", err);
+    if (err.code === "SQLITE_CONSTRAINT_PRIMARYKEY") {
+      return res.status(409).json({
+        success: false,
+        error: "Share key already exists",
       });
     }
-  );
-
-  stmt.finalize();
+    return res.status(500).json({
+      success: false,
+      error: "Failed to create shared journal",
+    });
+  }
 });
 
 // Get journal info and entries by share key
@@ -165,63 +171,55 @@ app.get("/journal/:key/entries", (req, res) => {
     });
   }
 
-  // First check if journal exists
-  db.get(
-    "SELECT * FROM shared_journals WHERE share_key = ?",
-    [key],
-    (err, journal) => {
-      if (err) {
-        console.error("Error fetching journal:", err);
-        return res.status(500).json({
-          success: false,
-          error: "Database error",
-        });
-      }
+  try {
+    // First check if journal exists
+    const journal = db
+      .prepare("SELECT * FROM shared_journals WHERE share_key = ?")
+      .get(key);
 
-      if (!journal) {
-        return res.status(404).json({
-          success: false,
-          error: "Journal not found",
-        });
-      }
-
-      // Get all entries for this journal
-      db.all(
-        `SELECT id, content, date, updated_at, 
-                created_by_id, created_by_username, 
-                last_edited_by_id, last_edited_by_username
-         FROM journal_entries 
-         WHERE share_key = ? 
-         ORDER BY date DESC`,
-        [key],
-        (err, entries) => {
-          if (err) {
-            console.error("Error fetching entries:", err);
-            return res.status(500).json({
-              success: false,
-              error: "Failed to fetch entries",
-            });
-          }
-
-          res.json({
-            success: true,
-            journal: {
-              shareKey: journal.share_key,
-              title: journal.title,
-              createdAt: journal.created_at,
-              updatedAt: journal.updated_at,
-              createdBy: {
-                id: journal.created_by_id,
-                username: journal.created_by_username,
-              },
-              editableByAnyone: Boolean(journal.editable_by_anyone),
-            },
-            entries: entries || [],
-          });
-        }
-      );
+    if (!journal) {
+      return res.status(404).json({
+        success: false,
+        error: "Journal not found",
+      });
     }
-  );
+
+    // Get all entries for this journal
+    const entries = db
+      .prepare(
+        `
+      SELECT id, content, date, updated_at, 
+             created_by_id, created_by_username, 
+             last_edited_by_id, last_edited_by_username
+      FROM journal_entries 
+      WHERE share_key = ? 
+      ORDER BY date DESC
+    `
+      )
+      .all(key);
+
+    res.json({
+      success: true,
+      journal: {
+        shareKey: journal.share_key,
+        title: journal.title,
+        createdAt: journal.created_at,
+        updatedAt: journal.updated_at,
+        createdBy: {
+          id: journal.created_by_id,
+          username: journal.created_by_username,
+        },
+        editableByAnyone: Boolean(journal.editable_by_anyone),
+      },
+      entries: entries || [],
+    });
+  } catch (err) {
+    console.error("Error fetching journal:", err);
+    return res.status(500).json({
+      success: false,
+      error: "Database error",
+    });
+  }
 });
 
 // Sync entries to a shared journal
@@ -243,41 +241,56 @@ app.post("/journal/:key/entries/sync", (req, res) => {
     });
   }
 
-  // First verify journal exists
-  db.get(
-    "SELECT share_key FROM shared_journals WHERE share_key = ?",
-    [key],
-    (err, journal) => {
-      if (err) {
-        console.error("Error checking journal:", err);
-        return res.status(500).json({
-          success: false,
-          error: "Database error",
-        });
-      }
+  try {
+    // First verify journal exists
+    const journal = db
+      .prepare("SELECT share_key FROM shared_journals WHERE share_key = ?")
+      .get(key);
 
-      if (!journal) {
-        return res.status(404).json({
-          success: false,
-          error: "Journal not found",
-        });
-      }
+    if (!journal) {
+      return res.status(404).json({
+        success: false,
+        error: "Journal not found",
+      });
+    }
 
-      // Process each entry
-      const syncedEntries = [];
-      const failedEntries = [];
-      let processed = 0;
+    if (entries.length === 0) {
+      return res.json({
+        success: true,
+        synced: [],
+        failed: [],
+        message: "No entries to sync",
+      });
+    }
 
-      if (entries.length === 0) {
-        return res.json({
-          success: true,
-          synced: [],
-          failed: [],
-          message: "No entries to sync",
-        });
-      }
+    // Process each entry
+    const syncedEntries = [];
+    const failedEntries = [];
 
-      entries.forEach((entry) => {
+    // Prepare statements
+    const getExistingEntry = db.prepare(
+      "SELECT id, created_by_id, created_by_username FROM journal_entries WHERE id = ?"
+    );
+    const updateEntry = db.prepare(`
+      UPDATE journal_entries 
+      SET content = ?, date = ?, updated_at = ?, 
+          last_edited_by_id = ?, last_edited_by_username = ?
+      WHERE id = ?
+    `);
+    const insertEntry = db.prepare(`
+      INSERT INTO journal_entries 
+      (id, share_key, content, date, updated_at, 
+       created_by_id, created_by_username, 
+       last_edited_by_id, last_edited_by_username) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const updateJournalTimestamp = db.prepare(
+      "UPDATE shared_journals SET updated_at = CURRENT_TIMESTAMP WHERE share_key = ?"
+    );
+
+    // Use transaction for better performance and consistency
+    const transaction = db.transaction((entries) => {
+      for (const entry of entries) {
         const { id, content, date, updatedAt, createdBy, lastEditedBy } = entry;
 
         if (!id || !content || !date) {
@@ -285,113 +298,71 @@ app.post("/journal/:key/entries/sync", (req, res) => {
             entry: entry,
             error: "Missing required fields (id, content, date)",
           });
-          processed++;
-          if (processed === entries.length) {
-            sendSyncResponse();
-          }
-          return;
+          continue;
         }
 
-        // Check if entry already exists to determine if this is an update
-        db.get(
-          "SELECT id, created_by_id, created_by_username FROM journal_entries WHERE id = ?",
-          [id],
-          (err, existingEntry) => {
-            if (err) {
-              console.error("Error checking existing entry:", err);
-              failedEntries.push({
-                entry: entry,
-                error: err.message,
-              });
-              processed++;
-              if (processed === entries.length) {
-                sendSyncResponse();
-              }
-              return;
-            }
+        try {
+          // Check if entry already exists
+          const existingEntry = getExistingEntry.get(id);
 
-            let stmt;
-            let params;
-
-            if (existingEntry) {
-              // Update existing entry - preserve original creator, update last editor
-              stmt = db.prepare(`
-                UPDATE journal_entries 
-                SET content = ?, date = ?, updated_at = ?, 
-                    last_edited_by_id = ?, last_edited_by_username = ?
-                WHERE id = ?
-              `);
-              params = [
-                content,
-                date,
-                updatedAt || new Date().toISOString(),
-                lastEditedBy?.id || existingEntry.created_by_id,
-                lastEditedBy?.username || existingEntry.created_by_username,
-                id,
-              ];
-            } else {
-              // Insert new entry
-              stmt = db.prepare(`
-                INSERT INTO journal_entries 
-                (id, share_key, content, date, updated_at, 
-                 created_by_id, created_by_username, 
-                 last_edited_by_id, last_edited_by_username) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-              `);
-              params = [
-                id,
-                key,
-                content,
-                date,
-                updatedAt || new Date().toISOString(),
-                createdBy?.id || null,
-                createdBy?.username || null,
-                lastEditedBy?.id || createdBy?.id || null,
-                lastEditedBy?.username || createdBy?.username || null,
-              ];
-            }
-
-            stmt.run(params, function (err) {
-              if (err) {
-                console.error("Error syncing entry:", err);
-                failedEntries.push({
-                  entry: entry,
-                  error: err.message,
-                });
-              } else {
-                syncedEntries.push({
-                  id: id,
-                  synced: true,
-                });
-              }
-
-              processed++;
-              if (processed === entries.length) {
-                sendSyncResponse();
-              }
-            });
-
-            stmt.finalize();
+          if (existingEntry) {
+            // Update existing entry - preserve original creator, update last editor
+            updateEntry.run(
+              content,
+              date,
+              updatedAt || new Date().toISOString(),
+              lastEditedBy?.id || existingEntry.created_by_id,
+              lastEditedBy?.username || existingEntry.created_by_username,
+              id
+            );
+          } else {
+            // Insert new entry
+            insertEntry.run(
+              id,
+              key,
+              content,
+              date,
+              updatedAt || new Date().toISOString(),
+              createdBy?.id || null,
+              createdBy?.username || null,
+              lastEditedBy?.id || createdBy?.id || null,
+              lastEditedBy?.username || createdBy?.username || null
+            );
           }
-        );
-      });
 
-      function sendSyncResponse() {
-        // Update journal's updated_at timestamp
-        db.run(
-          "UPDATE shared_journals SET updated_at = CURRENT_TIMESTAMP WHERE share_key = ?",
-          [key]
-        );
-
-        res.json({
-          success: true,
-          synced: syncedEntries,
-          failed: failedEntries,
-          message: `Synced ${syncedEntries.length} entries, ${failedEntries.length} failed`,
-        });
+          syncedEntries.push({
+            id: id,
+            synced: true,
+          });
+        } catch (err) {
+          console.error("Error syncing entry:", err);
+          failedEntries.push({
+            entry: entry,
+            error: err.message,
+          });
+        }
       }
-    }
-  );
+
+      // Update journal's updated_at timestamp
+      updateJournalTimestamp.run(key);
+    });
+
+    // Execute transaction
+    transaction(entries);
+
+    res.json({
+      success: true,
+      synced: syncedEntries,
+      failed: failedEntries,
+      message: `Synced ${syncedEntries.length} entries, ${failedEntries.length} failed`,
+    });
+  } catch (err) {
+    console.error("Error in sync transaction:", err);
+    return res.status(500).json({
+      success: false,
+      error: "Database error during sync",
+    });
+  }
 });
 
 // Toggle journal edit permissions
@@ -413,79 +384,69 @@ app.patch("/journal/:key/permissions", (req, res) => {
     });
   }
 
-  // First check if journal exists and if the user is the creator
-  db.get(
-    "SELECT * FROM shared_journals WHERE share_key = ?",
-    [key],
-    (err, journal) => {
-      if (err) {
-        console.error("Error fetching journal:", err);
-        return res.status(500).json({
-          success: false,
-          error: "Database error",
-        });
-      }
+  try {
+    // First check if journal exists and if the user is the creator
+    const journal = db
+      .prepare("SELECT * FROM shared_journals WHERE share_key = ?")
+      .get(key);
 
-      if (!journal) {
-        return res.status(404).json({
-          success: false,
-          error: "Journal not found",
-        });
-      }
-
-      // Check if the user is the creator (optional enforcement)
-      if (userId && journal.created_by_id && userId !== journal.created_by_id) {
-        return res.status(403).json({
-          success: false,
-          error: "Only the journal creator can change permissions",
-        });
-      }
-
-      // Update the permissions
-      db.run(
-        "UPDATE shared_journals SET editable_by_anyone = ?, updated_at = CURRENT_TIMESTAMP WHERE share_key = ?",
-        [editableByAnyone ? 1 : 0, key],
-        function (err) {
-          if (err) {
-            console.error("Error updating permissions:", err);
-            return res.status(500).json({
-              success: false,
-              error: "Failed to update permissions",
-            });
-          }
-
-          res.json({
-            success: true,
-            editableByAnyone: editableByAnyone,
-            message: `Journal permissions updated: ${
-              editableByAnyone ? "anyone can edit" : "creator only"
-            }`,
-          });
-        }
-      );
+    if (!journal) {
+      return res.status(404).json({
+        success: false,
+        error: "Journal not found",
+      });
     }
-  );
+
+    // Check if the user is the creator (optional enforcement)
+    if (userId && journal.created_by_id && userId !== journal.created_by_id) {
+      return res.status(403).json({
+        success: false,
+        error: "Only the journal creator can change permissions",
+      });
+    }
+
+    // Update the permissions
+    const updateStmt = db.prepare(
+      "UPDATE shared_journals SET editable_by_anyone = ?, updated_at = CURRENT_TIMESTAMP WHERE share_key = ?"
+    );
+    updateStmt.run(editableByAnyone ? 1 : 0, key);
+
+    res.json({
+      success: true,
+      editableByAnyone: editableByAnyone,
+      message: `Journal permissions updated: ${
+        editableByAnyone ? "anyone can edit" : "creator only"
+      }`,
+    });
+  } catch (err) {
+    console.error("Error updating permissions:", err);
+    return res.status(500).json({
+      success: false,
+      error: "Failed to update permissions",
+    });
+  }
 });
 
 // Get all shared journals (for admin/debugging)
 app.get("/journals", (req, res) => {
-  db.all(
-    "SELECT share_key, title, created_at, updated_at FROM shared_journals ORDER BY created_at DESC",
-    (err, journals) => {
-      if (err) {
-        console.error("Error fetching journals:", err);
-        return res.status(500).json({
-          success: false,
-          error: "Failed to fetch journals",
-        });
-      }
+  try {
+    const journals = db
+      .prepare(
+        "SELECT share_key, title, created_at, updated_at FROM shared_journals ORDER BY created_at DESC"
+      )
+      .all();
 
-      res.json({
-        success: true,
-        journals: journals || [],
-      });
-    }
-  );
+    res.json({
+      success: true,
+      journals: journals || [],
+    });
+  } catch (err) {
+    console.error("Error fetching journals:", err);
+    return res.status(500).json({
+      success: false,
+      error: "Failed to fetch journals",
+    });
+  }
 });
 
 // Delete a journal and all its entries (for cleanup)
@@ -499,37 +460,47 @@ app.delete("/journal/:key", (req, res) => {
     });
   }
 
-  db.serialize(() => {
-    // Delete entries first
-    db.run("DELETE FROM journal_entries WHERE share_key = ?", [key]);
+  try {
+    // Use transaction to ensure both deletes happen atomically
+    const deleteTransaction = db.transaction(() => {
+      // Delete entries first
+      const deleteEntries = db.prepare(
+        "DELETE FROM journal_entries WHERE share_key = ?"
+      );
+      deleteEntries.run(key);
 
-    // Then delete journal
-    db.run(
-      "DELETE FROM shared_journals WHERE share_key = ?",
-      [key],
-      function (err) {
-        if (err) {
-          console.error("Error deleting journal:", err);
-          return res.status(500).json({
-            success: false,
-            error: "Failed to delete journal",
-          });
-        }
+      // Then delete journal
+      const deleteJournal = db.prepare(
+        "DELETE FROM shared_journals WHERE share_key = ?"
+      );
+      const result = deleteJournal.run(key);
 
-        if (this.changes === 0) {
-          return res.status(404).json({
-            success: false,
-            error: "Journal not found",
-          });
-        }
-
-        res.json({
-          success: true,
-          message: "Journal and all entries deleted successfully",
-        });
+      if (result.changes === 0) {
+        throw new Error("Journal not found");
       }
-    );
-  });
+
+      return result;
+    });
+
+    deleteTransaction();
+
+    res.json({
+      success: true,
+      message: "Journal and all entries deleted successfully",
+    });
+  } catch (err) {
+    console.error("Error deleting journal:", err);
+    if (err.message === "Journal not found") {
+      return res.status(404).json({
+        success: false,
+        error: "Journal not found",
+      });
+    }
+    return res.status(500).json({
+      success: false,
+      error: "Failed to delete journal",
+    });
+  }
 });
 
 // Error handling middleware
@@ -559,12 +530,11 @@ app.listen(PORT, () => {
 // Graceful shutdown
 process.on("SIGINT", () => {
   console.log("\n🛑 Shutting down server...");
-  db.close((err) => {
-    if (err) {
-      console.error("Error closing database:", err);
-    } else {
-      console.log("📦 Database connection closed");
-    }
-    process.exit(0);
-  });
+  try {
+    db.close();
+    console.log("📦 Database connection closed");
+  } catch (err) {
+    console.error("Error closing database:", err);
+  }
+  process.exit(0);
 });

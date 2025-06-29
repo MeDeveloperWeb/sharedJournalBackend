@@ -15,13 +15,13 @@
   ],
   "author": "",
   "license": "ISC",
-  "description": "Backend API for Shared Journal App",
+  "description": "Backend API for How's you app",
   "dependencies": {
+    "better-sqlite3": "^11.10.0",
     "cors": "^2.8.5",
     "dotenv": "^17.0.0",
     "express": "^5.1.0",
     "nodemon": "^3.1.10",
-    "sqlite3": "^5.1.7",
     "uuid": "^11.1.0"
   }
 }
